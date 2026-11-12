@@ -172,9 +172,38 @@ def make_image():
     return png(c.downsample())
 
 
+def validate_png(data):
+    """Fail closed if encoding or dimensions ever drift outside contest limits."""
+    if not data.startswith(bytes((137, 80, 78, 71, 13, 10, 26, 10))):
+        raise SystemExit('renderer did not produce a PNG')
+    width, height = struct.unpack('!II', data[16:24])
+    if width > 1024 or height > 1024:
+        raise SystemExit(f'PNG dimensions exceed 1024: {width}x{height}')
+    if len(data) > 1024*1024:
+        raise SystemExit(f'PNG exceeds 1 MiB: {len(data)} bytes')
+    if not data.endswith(bytes((73, 69, 78, 68, 174, 66, 96, 130))):
+        raise SystemExit('PNG is missing its complete IEND chunk')
+    # Verify each chunk CRC as a final guard against truncated/corrupt output.
+    offset = 8
+    while offset < len(data):
+        if offset + 12 > len(data):
+            raise SystemExit('PNG contains a truncated chunk header')
+        length = struct.unpack('!I', data[offset:offset+4])[0]
+        end = offset + 12 + length
+        if end > len(data):
+            raise SystemExit('PNG contains a truncated chunk body')
+        chunk = data[offset+4:offset+8+length]
+        expected = struct.unpack('!I', data[offset+8+length:end])[0]
+        if zlib.crc32(chunk) & 0xffffffff != expected:
+            raise SystemExit('PNG chunk checksum mismatch')
+        offset = end
+    if offset != len(data):
+        raise SystemExit('PNG has trailing bytes after its final chunk')
+
+
 def main():
     data=make_image()
-    if len(data)>1024*1024: raise SystemExit('PNG exceeds 1 MiB')
+    validate_png(data)
     output_dir=os.environ.get('OUTPUT_DIR','/output')
     os.makedirs(output_dir,exist_ok=True)
     with open(os.path.join(output_dir,'entry.png'),'wb') as f: f.write(data)
